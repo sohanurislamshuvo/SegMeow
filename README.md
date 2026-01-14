@@ -142,7 +142,70 @@ SegMeow/
 For GPU-accelerated training, use Google Colab.
 
 <details>
-<summary><strong>Quick Setup (Click to expand)</strong></summary>
+<summary><strong>Run Full App in Colab (Click to expand)</strong></summary>
+
+Run the complete SegMeow Streamlit app in Google Colab with GPU support.
+
+### Step 1: Clone & Install
+
+```python
+# Clone the repository
+!git clone https://github.com/sohanurislamshuvo/SegMeow.git
+%cd SegMeow
+
+# Install dependencies
+!pip install -r requirements.txt
+!pip install pyngrok -q
+```
+
+### Step 2: Setup ngrok (Free Account)
+
+1. Go to [ngrok.com](https://ngrok.com/) and create a free account
+2. Get your auth token from [dashboard](https://dashboard.ngrok.com/get-started/your-authtoken)
+
+```python
+# Set your ngrok auth token
+!ngrok authtoken YOUR_AUTH_TOKEN_HERE
+```
+
+### Step 3: Run the App
+
+```python
+from pyngrok import ngrok
+import subprocess
+
+# Kill any existing tunnels
+ngrok.kill()
+
+# Start Streamlit in background
+process = subprocess.Popen(['streamlit', 'run', 'app.py', '--server.port', '8501'])
+
+# Create public URL
+public_url = ngrok.connect(8501)
+print(f"✅ SegMeow is running at: {public_url}")
+```
+
+### Step 4: Access the App
+
+Click the ngrok URL printed above to open SegMeow in your browser!
+
+### Alternative: Using localtunnel (No signup required)
+
+```python
+# Install localtunnel
+!npm install -g localtunnel
+
+# Run Streamlit
+!streamlit run app.py &
+
+# Create tunnel (run in new cell)
+!lt --port 8501
+```
+
+</details>
+
+<details>
+<summary><strong>Quick Training Script (Click to expand)</strong></summary>
 
 ```python
 #@title SegMeow - Quick Setup
@@ -218,40 +281,136 @@ print("Model saved to Drive!")
 </details>
 
 <details>
-<summary><strong>Step-by-Step Guide (Click to expand)</strong></summary>
+<summary><strong>Step-by-Step Training Guide (Click to expand)</strong></summary>
 
 ### 1. Enable GPU
-`Runtime` → `Change runtime type` → Select `GPU`
+`Runtime` → `Change runtime type` → Select `GPU` (T4 recommended)
 
 ### 2. Install Dependencies
 ```python
 !pip install ultralytics
 ```
 
-### 3. Upload Dataset
+### 3. Mount Google Drive
 ```python
 from google.colab import drive
 drive.mount('/content/drive')
+
+# Copy your dataset from Drive
 !cp -r "/content/drive/MyDrive/your_dataset" /content/dataset
 ```
 
-### 4. Train Model
+### 4. Convert COCO to YOLO Format
+```python
+import json
+import os
+
+def coco_to_yolo_seg(coco_json, images_dir, labels_dir):
+    with open(coco_json) as f:
+        coco = json.load(f)
+
+    images = {img["id"]: img for img in coco["images"]}
+    os.makedirs(labels_dir, exist_ok=True)
+
+    for ann in coco["annotations"]:
+        img = images[ann["image_id"]]
+        w, h = img["width"], img["height"]
+        seg = ann["segmentation"][0]
+
+        yolo = [str(ann["category_id"])]
+        for i in range(0, len(seg), 2):
+            yolo.append(str(seg[i] / w))
+            yolo.append(str(seg[i+1] / h))
+
+        file_name = os.path.basename(img["file_name"])
+        label_name = os.path.splitext(file_name)[0] + ".txt"
+        label_path = os.path.join(labels_dir, label_name)
+
+        with open(label_path, "a") as f:
+            f.write(" ".join(yolo) + "\n")
+
+    print(f"Converted {len(coco['annotations'])} annotations")
+
+# Run conversion
+coco_to_yolo_seg("dataset/coco.json", "dataset/images/train", "dataset/labels/train")
+```
+
+### 5. Extract Classes & Create data.yaml
+```python
+import json
+import yaml
+
+# Extract classes from COCO
+with open("dataset/coco.json") as f:
+    coco = json.load(f)
+
+categories = sorted(coco.get("categories", []), key=lambda x: x["id"])
+class_names = [cat["name"] for cat in categories]
+print("Classes:", class_names)
+
+# Create data.yaml
+data = {
+    "path": "/content/dataset",
+    "train": "images/train",
+    "val": "images/train",
+    "nc": len(class_names),
+    "names": class_names
+}
+
+with open("data.yaml", "w") as f:
+    yaml.dump(data, f)
+
+print("data.yaml created!")
+```
+
+### 6. Train Model
 ```python
 from ultralytics import YOLO
 
-# YOLOv8
-model = YOLO("yolov8n-seg.pt")
+# Choose your model:
+# YOLOv8: yolov8n-seg, yolov8s-seg, yolov8m-seg, yolov8l-seg, yolov8x-seg
+# YOLOv11: yolo11n-seg, yolo11s-seg, yolo11m-seg, yolo11l-seg, yolo11x-seg
 
-# Or YOLOv11
-# model = YOLO("yolo11n-seg.pt")
+model = YOLO("yolov8n-seg.pt")  # or "yolo11n-seg.pt"
 
-model.train(data="data.yaml", epochs=100, imgsz=640, batch=16, device=0)
+results = model.train(
+    data="data.yaml",
+    epochs=100,
+    imgsz=640,
+    batch=16,
+    device=0,
+    workers=2,
+    project="runs",
+    name="segmeow_train",
+    exist_ok=True
+)
 ```
 
-### 5. Download Model
+### 7. Test Inference
+```python
+from ultralytics import YOLO
+from google.colab.patches import cv2_imshow
+
+# Load trained model
+model = YOLO("runs/segmeow_train/weights/best.pt")
+
+# Run inference
+results = model("test_image.jpg")
+
+# Display result
+result_img = results[0].plot(line_width=3)
+cv2_imshow(result_img)
+```
+
+### 8. Download Trained Model
 ```python
 from google.colab import files
-files.download("runs/segment/train/weights/best.pt")
+
+# Download best weights
+files.download("runs/segmeow_train/weights/best.pt")
+
+# Or save to Google Drive
+!cp runs/segmeow_train/weights/best.pt "/content/drive/MyDrive/best.pt"
 ```
 
 </details>
