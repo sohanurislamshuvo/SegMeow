@@ -139,281 +139,316 @@ SegMeow/
 
 ## Google Colab
 
-For GPU-accelerated training, use Google Colab.
+Train your segmentation model with free GPU on Google Colab.
+
+### Prerequisites
+
+Before starting, make sure you have:
+- A Google account
+- Your dataset uploaded to Google Drive with this structure:
+  ```
+  your_dataset/
+  ├── coco.json          # COCO format annotations from Label Studio
+  └── images/
+      └── train/         # Your training images
+  ```
+
+---
+
+### Step 1: Enable GPU Runtime
+
+1. Open [Google Colab](https://colab.research.google.com/)
+2. Create a new notebook
+3. Go to `Runtime` → `Change runtime type`
+4. Select `GPU` (T4 recommended) → Click `Save`
+
+---
+
+### Step 2: Install Dependencies
+
+```python
+# Install required packages
+!pip install ultralytics pyyaml -q
+```
+
+---
+
+### Step 3: Mount Google Drive
+
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+```
+
+---
+
+### Step 4: Copy Dataset to Colab
+
+```python
+import shutil
+import os
+
+# CHANGE THIS to your dataset path in Google Drive
+DRIVE_DATASET_PATH = "/content/drive/MyDrive/your_dataset"
+
+# Copy dataset to Colab runtime (faster training)
+shutil.copytree(DRIVE_DATASET_PATH, "/content/dataset")
+
+print("Dataset copied successfully!")
+print("Files:", os.listdir("/content/dataset"))
+```
+
+---
+
+### Step 5: Convert COCO to YOLO Format
+
+```python
+import json
+import os
+
+def coco_to_yolo_seg(coco_json_path, labels_output_dir):
+    """Convert COCO JSON annotations to YOLO segmentation format"""
+
+    with open(coco_json_path) as f:
+        coco = json.load(f)
+
+    # Create lookup for images
+    images = {img["id"]: img for img in coco["images"]}
+
+    # Create labels directory
+    os.makedirs(labels_output_dir, exist_ok=True)
+
+    # Clear existing labels
+    for f in os.listdir(labels_output_dir):
+        os.remove(os.path.join(labels_output_dir, f))
+
+    # Convert each annotation
+    for ann in coco["annotations"]:
+        img = images[ann["image_id"]]
+        w, h = img["width"], img["height"]
+        seg = ann["segmentation"][0]
+
+        # Normalize coordinates
+        yolo_line = [str(ann["category_id"])]
+        for i in range(0, len(seg), 2):
+            yolo_line.append(str(seg[i] / w))      # x normalized
+            yolo_line.append(str(seg[i + 1] / h))  # y normalized
+
+        # Write to label file
+        img_name = os.path.basename(img["file_name"])
+        label_name = os.path.splitext(img_name)[0] + ".txt"
+        label_path = os.path.join(labels_output_dir, label_name)
+
+        with open(label_path, "a") as f:
+            f.write(" ".join(yolo_line) + "\n")
+
+    print(f"Converted {len(coco['annotations'])} annotations to YOLO format")
+    return coco
+
+# Run conversion
+coco_data = coco_to_yolo_seg(
+    coco_json_path="/content/dataset/coco.json",
+    labels_output_dir="/content/dataset/labels/train"
+)
+```
+
+---
+
+### Step 6: Create Dataset Configuration (data.yaml)
+
+```python
+import yaml
+
+# Extract class names from COCO
+categories = sorted(coco_data.get("categories", []), key=lambda x: x["id"])
+class_names = [cat["name"] for cat in categories]
+
+print(f"Found {len(class_names)} classes: {class_names}")
+
+# Create data.yaml
+data_config = {
+    "path": "/content/dataset",
+    "train": "images/train",
+    "val": "images/train",  # Using train as val (change if you have separate val set)
+    "nc": len(class_names),
+    "names": class_names
+}
+
+with open("/content/data.yaml", "w") as f:
+    yaml.dump(data_config, f, default_flow_style=False)
+
+print("\ndata.yaml created!")
+print(yaml.dump(data_config, default_flow_style=False))
+```
+
+---
+
+### Step 7: Train the Model
+
+```python
+from ultralytics import YOLO
+
+# ============ CONFIGURATION ============
+MODEL = "yolov8n-seg.pt"  # Options: yolov8n-seg, yolov8s-seg, yolov8m-seg, yolov8l-seg, yolov8x-seg
+                          #          yolo11n-seg, yolo11s-seg, yolo11m-seg, yolo11l-seg, yolo11x-seg
+EPOCHS = 100              # Number of training epochs
+IMG_SIZE = 640            # Image size (640 or 1024)
+BATCH_SIZE = 16           # Reduce to 8 if out of memory
+# =======================================
+
+# Load model
+model = YOLO(MODEL)
+
+# Start training
+results = model.train(
+    data="/content/data.yaml",
+    epochs=EPOCHS,
+    imgsz=IMG_SIZE,
+    batch=BATCH_SIZE,
+    device=0,         # GPU
+    workers=2,
+    project="runs",
+    name="train",
+    exist_ok=True
+)
+
+print("\nTraining complete!")
+print(f"Best model saved at: runs/train/weights/best.pt")
+```
+
+---
+
+### Step 8: Test Inference
+
+```python
+from ultralytics import YOLO
+from google.colab.patches import cv2_imshow
+import os
+
+# Load trained model
+model = YOLO("runs/train/weights/best.pt")
+
+# Get a test image (first image from training set)
+test_images_dir = "/content/dataset/images/train"
+test_image = os.path.join(test_images_dir, os.listdir(test_images_dir)[0])
+
+# Run inference
+results = model(test_image)
+
+# Display result with segmentation masks
+result_img = results[0].plot(line_width=2)
+cv2_imshow(result_img)
+
+# Print detection details
+for r in results:
+    if r.masks is not None:
+        print(f"Detected {len(r.masks)} objects")
+```
+
+---
+
+### Step 9: Save Model to Google Drive
+
+```python
+import shutil
+
+# CHANGE THIS to your desired save location
+SAVE_PATH = "/content/drive/MyDrive/trained_model.pt"
+
+# Copy best weights to Drive
+shutil.copy("runs/train/weights/best.pt", SAVE_PATH)
+
+print(f"Model saved to: {SAVE_PATH}")
+```
+
+---
+
+### Step 10: Download Model (Optional)
+
+```python
+from google.colab import files
+
+# Download to your computer
+files.download("runs/train/weights/best.pt")
+```
+
+---
+
+### Quick Copy-Paste Version
 
 <details>
-<summary><strong>Run Full App in Colab (Click to expand)</strong></summary>
-
-Run the complete SegMeow Streamlit app in Google Colab with GPU support.
-
-### Step 1: Clone & Install
+<summary><strong>All-in-One Script (Click to expand)</strong></summary>
 
 ```python
-# Clone the repository
-!git clone https://github.com/sohanurislamshuvo/SegMeow.git
-%cd SegMeow
+#@title SegMeow Training - All in One Cell
 
-# Install dependencies
-!pip install -r requirements.txt
-!pip install pyngrok -q
-```
-
-### Step 2: Setup ngrok (Free Account)
-
-1. Go to [ngrok.com](https://ngrok.com/) and create a free account
-2. Get your auth token from [dashboard](https://dashboard.ngrok.com/get-started/your-authtoken)
-
-```python
-# Set your ngrok auth token
-!ngrok authtoken YOUR_AUTH_TOKEN_HERE
-```
-
-### Step 3: Run the App
-
-```python
-from pyngrok import ngrok
-import subprocess
-
-# Kill any existing tunnels
-ngrok.kill()
-
-# Start Streamlit in background
-process = subprocess.Popen(['streamlit', 'run', 'app.py', '--server.port', '8501'])
-
-# Create public URL
-public_url = ngrok.connect(8501)
-print(f"✅ SegMeow is running at: {public_url}")
-```
-
-### Step 4: Access the App
-
-Click the ngrok URL printed above to open SegMeow in your browser!
-
-### Alternative: Using localtunnel (No signup required)
-
-```python
-# Install localtunnel
-!npm install -g localtunnel
-
-# Run Streamlit
-!streamlit run app.py &
-
-# Create tunnel (run in new cell)
-!lt --port 8501
-```
-
-</details>
-
-<details>
-<summary><strong>Quick Training Script (Click to expand)</strong></summary>
-
-```python
-#@title SegMeow - Quick Setup
+# ============ CONFIGURATION - EDIT THESE ============
+DRIVE_DATASET_PATH = "/content/drive/MyDrive/your_dataset"  # Your dataset in Drive
+MODEL = "yolov8n-seg.pt"    # Model to use
+EPOCHS = 100                 # Training epochs
+IMG_SIZE = 640               # Image size
+BATCH_SIZE = 16              # Batch size (reduce if OOM)
+# ====================================================
 
 # Install
-!pip install ultralytics -q
+!pip install ultralytics pyyaml -q
 
 # Mount Drive
 from google.colab import drive
 drive.mount('/content/drive')
 
-# Config - EDIT THESE
-DRIVE_DATASET_PATH = "/content/drive/MyDrive/your_dataset"
-COCO_JSON = "coco.json"
-EPOCHS = 100
-MODEL_VERSION = "yolov8"  # "yolov8" or "yolo11"
-MODEL_SIZE = "n"          # n, s, m, l, x
-
-#-------------------------------------------
-import json, os, yaml
-from ultralytics import YOLO
-
 # Copy dataset
-!cp -r "{DRIVE_DATASET_PATH}" /content/dataset
-os.chdir("/content")
+import shutil, os, json, yaml
+shutil.copytree(DRIVE_DATASET_PATH, "/content/dataset")
 
 # Convert COCO to YOLO
-def convert_coco():
-    with open(f"dataset/{COCO_JSON}") as f:
-        coco = json.load(f)
-
-    images = {img["id"]: img for img in coco["images"]}
-    labels_dir = "dataset/labels/train"
-    os.makedirs(labels_dir, exist_ok=True)
-
-    for ann in coco["annotations"]:
-        img = images[ann["image_id"]]
-        w, h = img["width"], img["height"]
-        seg = ann["segmentation"][0]
-        yolo = [str(ann["category_id"])]
-        for i in range(0, len(seg), 2):
-            yolo.extend([str(seg[i]/w), str(seg[i+1]/h)])
-
-        fname = os.path.splitext(os.path.basename(img["file_name"]))[0] + ".txt"
-        with open(f"{labels_dir}/{fname}", "a") as f:
-            f.write(" ".join(yolo) + "\n")
-
-    cats = sorted(coco.get("categories", []), key=lambda x: x["id"])
-    return [c["name"] for c in cats]
-
-classes = convert_coco()
-print(f"Classes: {classes}")
-
-# Create data.yaml
-with open("data.yaml", "w") as f:
-    yaml.dump({
-        "path": "/content/dataset",
-        "train": "images/train",
-        "val": "images/train",
-        "nc": len(classes),
-        "names": classes
-    }, f)
-
-# Train
-model = YOLO(f"{MODEL_VERSION}{MODEL_SIZE}-seg.pt")
-model.train(data="data.yaml", epochs=EPOCHS, imgsz=640, batch=16, device=0)
-
-# Save to Drive
-!cp runs/segment/train/weights/best.pt "{DRIVE_DATASET_PATH}/best.pt"
-print("Model saved to Drive!")
-```
-
-</details>
-
-<details>
-<summary><strong>Step-by-Step Training Guide (Click to expand)</strong></summary>
-
-### 1. Enable GPU
-`Runtime` → `Change runtime type` → Select `GPU` (T4 recommended)
-
-### 2. Install Dependencies
-```python
-!pip install ultralytics
-```
-
-### 3. Mount Google Drive
-```python
-from google.colab import drive
-drive.mount('/content/drive')
-
-# Copy your dataset from Drive
-!cp -r "/content/drive/MyDrive/your_dataset" /content/dataset
-```
-
-### 4. Convert COCO to YOLO Format
-```python
-import json
-import os
-
-def coco_to_yolo_seg(coco_json, images_dir, labels_dir):
-    with open(coco_json) as f:
-        coco = json.load(f)
-
-    images = {img["id"]: img for img in coco["images"]}
-    os.makedirs(labels_dir, exist_ok=True)
-
-    for ann in coco["annotations"]:
-        img = images[ann["image_id"]]
-        w, h = img["width"], img["height"]
-        seg = ann["segmentation"][0]
-
-        yolo = [str(ann["category_id"])]
-        for i in range(0, len(seg), 2):
-            yolo.append(str(seg[i] / w))
-            yolo.append(str(seg[i+1] / h))
-
-        file_name = os.path.basename(img["file_name"])
-        label_name = os.path.splitext(file_name)[0] + ".txt"
-        label_path = os.path.join(labels_dir, label_name)
-
-        with open(label_path, "a") as f:
-            f.write(" ".join(yolo) + "\n")
-
-    print(f"Converted {len(coco['annotations'])} annotations")
-
-# Run conversion
-coco_to_yolo_seg("dataset/coco.json", "dataset/images/train", "dataset/labels/train")
-```
-
-### 5. Extract Classes & Create data.yaml
-```python
-import json
-import yaml
-
-# Extract classes from COCO
-with open("dataset/coco.json") as f:
+with open("/content/dataset/coco.json") as f:
     coco = json.load(f)
 
-categories = sorted(coco.get("categories", []), key=lambda x: x["id"])
-class_names = [cat["name"] for cat in categories]
-print("Classes:", class_names)
+images = {img["id"]: img for img in coco["images"]}
+os.makedirs("/content/dataset/labels/train", exist_ok=True)
+
+for ann in coco["annotations"]:
+    img = images[ann["image_id"]]
+    w, h = img["width"], img["height"]
+    seg = ann["segmentation"][0]
+    yolo = [str(ann["category_id"])] + [str(seg[i]/w if i%2==0 else seg[i]/h) for i in range(len(seg))]
+    label_name = os.path.splitext(os.path.basename(img["file_name"]))[0] + ".txt"
+    with open(f"/content/dataset/labels/train/{label_name}", "a") as f:
+        f.write(" ".join(yolo) + "\n")
 
 # Create data.yaml
-data = {
-    "path": "/content/dataset",
-    "train": "images/train",
-    "val": "images/train",
-    "nc": len(class_names),
-    "names": class_names
-}
+categories = sorted(coco.get("categories", []), key=lambda x: x["id"])
+class_names = [c["name"] for c in categories]
+with open("/content/data.yaml", "w") as f:
+    yaml.dump({"path": "/content/dataset", "train": "images/train", "val": "images/train",
+               "nc": len(class_names), "names": class_names}, f)
 
-with open("data.yaml", "w") as f:
-    yaml.dump(data, f)
+print(f"Classes: {class_names}")
 
-print("data.yaml created!")
-```
-
-### 6. Train Model
-```python
+# Train
 from ultralytics import YOLO
+model = YOLO(MODEL)
+model.train(data="/content/data.yaml", epochs=EPOCHS, imgsz=IMG_SIZE, batch=BATCH_SIZE, device=0)
 
-# Choose your model:
-# YOLOv8: yolov8n-seg, yolov8s-seg, yolov8m-seg, yolov8l-seg, yolov8x-seg
-# YOLOv11: yolo11n-seg, yolo11s-seg, yolo11m-seg, yolo11l-seg, yolo11x-seg
-
-model = YOLO("yolov8n-seg.pt")  # or "yolo11n-seg.pt"
-
-results = model.train(
-    data="data.yaml",
-    epochs=100,
-    imgsz=640,
-    batch=16,
-    device=0,
-    workers=2,
-    project="runs",
-    name="segmeow_train",
-    exist_ok=True
-)
-```
-
-### 7. Test Inference
-```python
-from ultralytics import YOLO
-from google.colab.patches import cv2_imshow
-
-# Load trained model
-model = YOLO("runs/segmeow_train/weights/best.pt")
-
-# Run inference
-results = model("test_image.jpg")
-
-# Display result
-result_img = results[0].plot(line_width=3)
-cv2_imshow(result_img)
-```
-
-### 8. Download Trained Model
-```python
-from google.colab import files
-
-# Download best weights
-files.download("runs/segmeow_train/weights/best.pt")
-
-# Or save to Google Drive
-!cp runs/segmeow_train/weights/best.pt "/content/drive/MyDrive/best.pt"
+# Save to Drive
+shutil.copy("runs/segment/train/weights/best.pt", f"{DRIVE_DATASET_PATH}/best.pt")
+print(f"\nModel saved to: {DRIVE_DATASET_PATH}/best.pt")
 ```
 
 </details>
+
+---
+
+### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `CUDA out of memory` | Reduce `BATCH_SIZE` to 8 or 4 |
+| `No GPU available` | Go to Runtime → Change runtime type → Select GPU |
+| `File not found` | Check your `DRIVE_DATASET_PATH` is correct |
+| `No annotations converted` | Ensure `coco.json` has `segmentation` field (polygon annotations) |
+| `Training too slow` | Use a smaller model (nano or small) |
 
 ---
 
